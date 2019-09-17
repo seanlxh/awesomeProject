@@ -1,22 +1,5 @@
 package raft
 
-//
-// this is an outline of the API that raft must expose to
-// the service (or tester). see comments below for
-// each of these functions for more details.
-//
-// rf = Make(...)
-//   create a new Raft server.
-// rf.Start(command interface{}) (index, term, isleader)
-//   start agreement on a new log entry
-// rf.GetState() (term, isLeader)
-//   ask a Raft for its current term, and whether it thinks it is leader
-// ApplyMsg
-//   each time a new entry is committed to the log, each Raft peer
-//   should send an ApplyMsg to the service (or tester)
-//   in the same server.
-//
-
 import (
 	"math/rand"
 	"sync"
@@ -25,29 +8,12 @@ import (
 )
 import "labrpc"
 
-// import "bytes"
-// import "labgob"
-
-//
-// as each Raft peer becomes aware that successive log entries are
-// committed, the peer should send an ApplyMsg to the service (or
-// tester) on the same server, via the applyCh passed to Make(). set
-// CommandValid to true to indicate that the ApplyMsg contains a newly
-// committed log entry.
-//
-// in Lab 3 you'll want to send other kinds of messages (e.g.,
-// snapshots) on the applyCh; at that point you can add fields to
-// ApplyMsg, but set CommandValid to false for these other uses.
-//
 type ApplyMsg struct {
 	CommandValid bool
 	Command      interface{}
 	CommandIndex int
 }
 
-//
-// A Go object implementing a single Raft peer.
-//
 type State int
 
 const (
@@ -63,7 +29,7 @@ type Log struct {
 	Command interface{}
 }
 
-type AppendEntriesArgs struct {
+type AppendEntriesArgs struct { //发送日志
 	Term         int
 	LeaderId     int
 	PrevLogIndex int
@@ -72,7 +38,7 @@ type AppendEntriesArgs struct {
 	LeaderCommit int
 }
 
-type AppendEntriesReply struct {
+type AppendEntriesReply struct { //发送日志回复
 	Term    int
 	Success bool
 }
@@ -95,9 +61,6 @@ type Raft struct {
 	persister *Persister          // Object to hold this peer's persisted state
 	me        int                 // this peer's index into peers[]
 
-	// Your data here (2A, 2B, 2C).
-	// Look at the paper's Figure 2 for a description of what
-	// state a Raft server must maintain.
 	state State
 
 	//server
@@ -116,8 +79,6 @@ type Raft struct {
 	AppendEntriesChannel chan bool
 }
 
-// return currentTerm and whether this server
-// believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
 
 	var term int
@@ -128,20 +89,8 @@ func (rf *Raft) GetState() (int, bool) {
 	return term, isleader
 }
 
-//
-// save Raft's persistent state to stable storage,
-// where it can later be retrieved after a crash and restart.
-// see paper's Figure 2 for a description of what should be persistent.
-//
 func (rf *Raft) persist() {
-	// Your code here (2C).
-	// Example:
-	// w := new(bytes.Buffer)
-	// e := labgob.NewEncoder(w)
-	// e.Encode(rf.xxx)
-	// e.Encode(rf.yyy)
-	// data := w.Bytes()
-	// rf.persister.SaveRaftState(data)
+
 }
 
 //
@@ -151,42 +100,13 @@ func (rf *Raft) readPersist(data []byte) {
 	if data == nil || len(data) < 1 { // bootstrap without any state?
 		return
 	}
-	// Your code here (2C).
-	// Example:
-	// r := bytes.NewBuffer(data)
-	// d := labgob.NewDecoder(r)
-	// var xxx
-	// var yyy
-	// if d.Decode(&xxx) != nil ||
-	//    d.Decode(&yyy) != nil {
-	//   error...
-	// } else {
-	//   rf.xxx = xxx
-	//   rf.yyy = yyy
-	// }
+
 }
 
 //
 // example RequestVote RPC arguments structure.
 // field names must start with capital letters!
 //
-type RequestVoteArgs struct {
-	Term         int
-	CandidateId  int
-	LastlogIndex int
-	LastlogTerm  int
-	// Your data here (2A, 2B).
-}
-
-//
-// example RequestVote RPC reply structure.
-// field names must start with capital letters!
-//
-type RequestVoteReply struct {
-	Term        int
-	VoteGranted bool
-	// Your data here (2A).
-}
 
 //
 // example RequestVote RPC handler.
@@ -432,9 +352,62 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	if args.Term > rf.currentTerm {
+		rf.beFollower(args.Term)
+		send(rf.AppendEntriesChannel)
+	}
+	success := false
+	prevIndexTerm := -1
+	if args.PrevLogIndex >= 0 {
+		prevIndexTerm = rf.log[args.PrevLogIndex].Term
+	}
+	if args.Term < rf.currentTerm {
 
+	} else if prevIndexTerm != args.PrevLogIndex {
+	}
+	reply.Term = rf.currentTerm
+	reply.Success = success
+	send(rf.AppendEntriesChannel)
 }
 
 func (rf *Raft) startAppendLog() {
+	for i := 0; i < len(rf.peers); i++ {
+		if i == rf.me {
+			continue
+		}
+		go func(idx int) {
+			if rf.state == Leader {
+				args := AppendEntriesArgs{
+					Term:         rf.currentTerm,
+					LeaderId:     rf.me,
+					PrevLogIndex: rf.getPrevLogIdx(idx),
+					PrevLogTerm:  rf.getPrevLogTerm(idx),
+					Entries:      make([]Log, 0),
+					LeaderCommit: rf.commitIndex,
+				}
+				reply := &AppendEntriesReply{}
+				res := rf.sendAppendEntries(idx, &args, reply)
+				if !res {
+					return
+				}
+				if reply.Term > rf.currentTerm {
+					rf.beFollower(reply.Term)
+					return
+				}
+			}
+		}(i)
+	}
+}
 
+func (rf *Raft) getPrevLogIdx(i int) int {
+	DPrintf("fdfddsffsdfsffs%d", len(rf.nextIndex))
+	return rf.nextIndex[i] - 1
+}
+
+func (rf *Raft) getPrevLogTerm(i int) int {
+	prevLogIdx := rf.getPrevLogIdx(i)
+	if prevLogIdx < 0 {
+		return -1
+	}
+	return rf.log[prevLogIdx].Term
 }
