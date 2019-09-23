@@ -2,6 +2,7 @@ package raft
 
 import (
 	"math/rand"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -112,7 +113,6 @@ func (rf *Raft) readPersist(data []byte) {
 // example RequestVote RPC handler.
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
-	// Your code here (2A, 2B).
 	if args.Term > rf.currentTerm {
 		rf.beFollower(args.Term)
 		send(rf.votedChannel)
@@ -185,12 +185,25 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 // the leader.
 //
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
+	//index := -1
+	//term := -1
+	//isLeader := true
+	//
+	//// Your code here (2B).
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	index := -1
-	term := -1
-	isLeader := true
+	term := rf.currentTerm
+	isLeader := (rf.state == Leader)
 
-	// Your code here (2B).
-
+	if isLeader {
+		index = rf.getLastLogIdx() + 1
+		newLog := Log{
+			Term:    rf.currentTerm,
+			Command: command,
+		}
+		rf.log = append(rf.log, newLog)
+	}
 	return index, term, isLeader
 }
 
@@ -226,7 +239,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.state = Follower
 	rf.currentTerm = 0
 	rf.votedFor = NULL
-	rf.log = make([]Log, 0)
+	rf.log = make([]Log, 1)
 
 	rf.commitIndex = 0
 	rf.lastApplied = 0
@@ -288,7 +301,7 @@ func (rf *Raft) startElection() {
 			if ret {
 				if reply.Term > rf.currentTerm {
 					rf.beFollower(reply.Term)
-					send(rf.votedChannel)
+					//send(rf.votedChannel)
 					return
 				}
 				if rf.state != Candidate {
@@ -352,22 +365,50 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	defer send(rf.AppendEntriesChannel)
 	if args.Term > rf.currentTerm {
 		rf.beFollower(args.Term)
-		send(rf.AppendEntriesChannel)
-	}
-	success := false
-	prevIndexTerm := -1
-	if args.PrevLogIndex >= 0 {
-		prevIndexTerm = rf.log[args.PrevLogIndex].Term
-	}
-	if args.Term < rf.currentTerm {
-
-	} else if prevIndexTerm != args.PrevLogIndex {
 	}
 	reply.Term = rf.currentTerm
-	reply.Success = success
-	send(rf.AppendEntriesChannel)
+	reply.Success = false
+	if args.Term < rf.currentTerm {
+		return
+	}
+	prevIndexTerm := -1
+	if args.PrevLogIndex >= 0 && args.PrevLogIndex < len(rf.log) {
+		prevIndexTerm = rf.log[args.PrevLogIndex].Term
+	}
+	if prevIndexTerm != args.PrevLogTerm {
+		return
+	}
+
+	index := args.PrevLogIndex
+	for i := 0; i < len(args.Entries); i++ {
+		index++
+		if index >= len(rf.log) {
+			rf.log = append(rf.log, args.Entries[i:]...)
+			break
+		}
+		if rf.log[index].Term != args.Entries[i].Term {
+			rf.log = rf.log[:index]
+			rf.log = append(rf.log, args.Entries[i:]...)
+			break
+		}
+	}
+	if args.LeaderCommit > rf.commitIndex {
+		rf.commitIndex = Min(args.LeaderCommit, rf.getLastLogIdx())
+		rf.updateLastApplied()
+	}
+	reply.Success = true
+}
+
+func Min(x, y int) int {
+	if x < y {
+		return x
+	}
+	return y
 }
 
 func (rf *Raft) startAppendLog() {
@@ -382,20 +423,59 @@ func (rf *Raft) startAppendLog() {
 					LeaderId:     rf.me,
 					PrevLogIndex: rf.getPrevLogIdx(idx),
 					PrevLogTerm:  rf.getPrevLogTerm(idx),
-					Entries:      make([]Log, 0),
+					Entries:      append([]Log{}, rf.log[rf.nextIndex[idx]:]...),
 					LeaderCommit: rf.commitIndex,
 				}
 				reply := &AppendEntriesReply{}
 				res := rf.sendAppendEntries(idx, &args, reply)
-				if !res {
+				rf.mu.Lock()
+				if !res || rf.state != Leader {
+					rf.mu.Unlock()
 					return
 				}
 				if reply.Term > rf.currentTerm {
 					rf.beFollower(reply.Term)
+					rf.mu.Unlock()
 					return
 				}
+				if reply.Success {
+					rf.matchIndex[idx] = args.PrevLogIndex + len(args.Entries)
+					rf.nextIndex[idx] = rf.matchIndex[idx] + 1
+					rf.updateCommitIndex()
+					rf.mu.Unlock()
+					return
+				} else {
+					rf.nextIndex[idx]--
+					rf.mu.Unlock()
+				}
+
 			}
 		}(i)
+	}
+}
+
+func (rf *Raft) updateCommitIndex() {
+	rf.matchIndex[rf.me] = len(rf.log) - 1
+	copyMatchIndex := make([]int, len(rf.matchIndex))
+	copy(copyMatchIndex, rf.matchIndex)
+	sort.Ints(copyMatchIndex)
+	N := copyMatchIndex[len(copyMatchIndex)/2]
+	if N > rf.commitIndex && rf.log[N].Term == rf.currentTerm {
+		rf.commitIndex = N
+		rf.updateLastApplied()
+	}
+}
+
+func (rf *Raft) updateLastApplied() {
+	for rf.lastApplied < rf.commitIndex {
+		rf.lastApplied++
+		curLog := rf.log[rf.lastApplied]
+		applyMsg := ApplyMsg{
+			CommandValid: true,
+			Command:      curLog.Command,
+			CommandIndex: rf.lastApplied,
+		}
+		rf.applyChannel <- applyMsg
 	}
 }
 
