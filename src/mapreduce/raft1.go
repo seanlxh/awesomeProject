@@ -1,9 +1,8 @@
-package raft
+package mapreduce
 
 import (
-	"bytes"
-	"labgob"
 	"math/rand"
+	"raft"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -61,18 +60,15 @@ type RequestVoteReply struct {
 type Raft struct {
 	mu        sync.Mutex          // Lock to protect shared access to this peer's state
 	peers     []*labrpc.ClientEnd // RPC end points of all peers
-	persister *Persister          // Object to hold this peer's persisted state
+	persister *raft.Persister     // Object to hold this peer's persisted state
 	me        int                 // this peer's index into peers[]
 
 	state State
+
 	//server
 	currentTerm int
 	votedFor    int
 	log         []Log
-
-	//log compaction
-	lastIncludedIndex int "the snapshot replaces all entries up through and including this index"
-	lastIncludedTerm  int "term of lastIncludedIndex"
 
 	commitIndex int
 	lastApplied int
@@ -220,7 +216,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 // turn off debug output from this instance.
 //
 func (rf *Raft) Kill() {
-	send(rf.killCh)
 	// Your code here, if desired.
 }
 
@@ -236,7 +231,7 @@ func (rf *Raft) Kill() {
 // for any long-running work.
 //
 func Make(peers []*labrpc.ClientEnd, me int,
-	persister *Persister, applyCh chan ApplyMsg) *Raft {
+	persister *raft.Persister, applyCh chan ApplyMsg) *Raft {
 	rf := &Raft{}
 	rf.peers = peers
 	rf.persister = persister
@@ -250,7 +245,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	rf.commitIndex = 0
 	rf.lastApplied = 0
-
 	rf.nextIndex = make([]int, len(peers))
 	rf.matchIndex = make([]int, len(peers))
 	// initialize from state persisted before a crash
@@ -487,34 +481,6 @@ func (rf *Raft) updateCommitIndex() {
 	}
 }
 
-//log compaction:
-func (rf *Raft) DoSnapShot(curIdx int, snapshot []byte) {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-	if curIdx <= rf.lastIncludedIndex {
-		return
-	}
-	//update last included index & term
-	rf.log = append(make([]Log, 0), rf.log[curIdx-rf.lastIncludedIndex:]...)
-	rf.lastIncludedIndex = curIdx
-	rf.lastIncludedTerm = rf.getLog(curIdx).Term
-	rf.persistWithSnapShot(snapshot)
-}
-
-func (rf *Raft) encodeRaftState() []byte {
-	w := new(bytes.Buffer)
-	e := labgob.NewEncoder(w)
-	e.Encode(rf.currentTerm)
-	e.Encode(rf.votedFor)
-	e.Encode(rf.log)
-	e.Encode(rf.lastIncludedIndex)
-	e.Encode(rf.lastIncludedTerm)
-	return w.Bytes()
-}
-func (rf *Raft) persistWithSnapShot(snapshot []byte) {
-	rf.persister.SaveStateAndSnapshot(rf.encodeRaftState(), snapshot)
-}
-
 func (rf *Raft) updateLastApplied() {
 	for rf.lastApplied < rf.commitIndex {
 		rf.lastApplied++
@@ -529,7 +495,7 @@ func (rf *Raft) updateLastApplied() {
 }
 
 func (rf *Raft) getPrevLogIdx(i int) int {
-	DPrintf("fdfddsffsdfsffs%d", len(rf.nextIndex))
+	raft.DPrintf("fdfddsffsdfsffs%d", len(rf.nextIndex))
 	return rf.nextIndex[i] - 1
 }
 
@@ -539,12 +505,4 @@ func (rf *Raft) getPrevLogTerm(i int) int {
 		return -1
 	}
 	return rf.log[prevLogIdx].Term
-}
-
-func (rf *Raft) getLog(i int) Log {
-	return rf.log[i-rf.lastIncludedIndex]
-}
-
-func (rf *Raft) logLen() int {
-	return len(rf.log) + rf.lastIncludedIndex
 }
